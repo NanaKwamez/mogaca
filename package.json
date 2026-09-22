@@ -1,0 +1,15 @@
+{
+  "name": "mogaca-academics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cd cerican && npm run dev",
+    "build": "cd cerican && npm run build",
+    "start": "cd cerican && npm run start",
+    "lint": "cd cerican && npm run lint"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  }
+}

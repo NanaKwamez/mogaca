@@ -1,0 +1,192 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Brand */
+  --color-primary:       #1B4F8A;
+  --color-primary-light: #3A7BC8;
+  --color-primary-dark:  #0F3560;
+
+  /* Semantic */
+  --color-success: #16A34A;
+  --color-warning: #D97706;
+  --color-danger:  #DC2626;
+  --color-info:    #0284C7;
+
+  /* Neutrals */
+  --color-surface:    #FFFFFF;
+  --color-background: #F8FAFC;
+  --color-nav:        #1E293B;
+  --color-border:     #E2E8F0;
+  --color-text:       #1E293B;
+  --color-text-muted: #64748B;
+  --color-text-inv:   #FFFFFF;
+
+  /* Score colours */
+  --score-excellent: #16A34A;
+  --score-good:      #0284C7;
+  --score-average:   #D97706;
+  --score-below:     #DC2626;
+
+  /* Typography */
+  --font-sans:    'Inter', system-ui, sans-serif;
+  --font-display: 'Lexend', 'Inter', sans-serif;
+
+  /* Radius */
+  --radius-sm: 6px;  
+  --radius-md: 10px;
+  --radius-lg: 16px; 
+  --radius-pill: 9999px;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-text font-sans;
+  }
+}
+
+.scoresheet-table th:first-child,
+.scoresheet-table td:first-child {
+  position: sticky;
+  left: 0;
+  background: white;
+  z-index: 1;
+  border-right: 2px solid var(--color-border);
+}
+
+.scoresheet-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background-image: linear-gradient(to right, white, white),
+                    linear-gradient(to right, white, white),
+                    linear-gradient(to right, rgba(0,0,0,0.08), transparent),
+                    linear-gradient(to left, rgba(0,0,0,0.08), transparent);
+  background-size: 30px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/* Mobile: each row becomes a card */
+@media (max-width: 767px) {
+  .data-table, .data-table tbody,
+  .data-table tr, .data-table td { display: block; }
+  .data-table thead { display: none; }
+  .data-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .data-table tr {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-3);
+    padding: var(--space-4);
+    background: white;
+  }
+}
+
+/* Vertical Header Utility for Master Scoresheets */
+.vertical-header {
+  height: 110px;
+  max-height: 120px;
+  vertical-align: bottom !important;
+  padding: 6px 3px !important;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.vertical-header-text {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+
+/* Print Optimization */
+@media print {
+  @page {
+    size: landscape;
+    margin: 8mm 6mm;
+  }
+
+  html, body {
+    background: white !important;
+    color: black !important;
+    font-size: 11px !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+  }
+
+  aside, header, nav, footer, button, form, .print\:hidden, [role="navigation"], .no-print {
+    display: none !important;
+  }
+
+  main {
+    overflow: visible !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+    width: 100% !important;
+  }
+
+  .print\:block {
+    display: block !important;
+  }
+
+  .print\:flex {
+    display: flex !important;
+  }
+
+  th, td, div {
+    position: static !important;
+    overflow: visible !important;
+  }
+
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    table-layout: auto !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tbody {
+    display: table-row-group !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  td, th {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .vertical-header {
+    height: 105px !important;
+    max-height: 115px !important;
+    padding: 4px 2px !important;
+  }
+
+  .vertical-header-text {
+    writing-mode: vertical-rl !important;
+    transform: rotate(180deg) !important;
+    font-size: 10.5px !important;
+    font-weight: 800 !important;
+    color: black !important;
+  }
+}

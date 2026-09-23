@@ -40,8 +40,31 @@ export interface UserRoleResult {
 }
 
 const ADMIN_STAFF_TYPES = ['Admin', 'Head Teacher', 'Accountant', 'Bursar', 'Administrator', 'Headteacher']
-const TEACHER_STAFF_TYPES = ['Teacher']
+const TEACHER_STAFF_TYPES = ['Teacher', 'Computing Teacher']
 const ADMIN_UP_ROLES = ['proprietress', 'headmaster', 'accountant', 'bursar', 'administrator']
+
+// Canonical map for class login emails to teacher names / identities
+const CLASS_EMAIL_MAP: Record<string, { email?: string; nameQuery?: string }> = {
+  'nursery1@morningglory.edu.gh': { email: 'nursery1@morningglory.edu.gh' },
+  'nursery2@morningglory.edu.gh': { email: 'nursery2@morningglory.edu.gh' },
+  'kg1@morningglory.edu.gh': { email: 'kg1@morningglory.edu.gh' },
+  'kg2@morningglory.edu.gh': { email: 'kg2@morningglory.edu.gh' },
+  'primary1@morningglory.edu.gh': { email: 'primary1@morningglory.edu.gh' },
+  'basic1@morningglory.edu.gh': { email: 'primary1@morningglory.edu.gh' },
+  'primary2@morningglory.edu.gh': { email: 'primary2@morningglory.edu.gh' },
+  'primary3@morningglory.edu.gh': { email: 'primary3@morningglory.edu.gh' },
+  'primary4@morningglory.edu.gh': { email: 'francis.twi@mogasco.edu.gh' },
+  'primary5@morningglory.edu.gh': { email: 'primary5@morningglory.edu.gh' },
+  'primary6@morningglory.edu.gh': { email: 'bismark.darko@mogasco.edu.gh' },
+  'jhs1@morningglory.edu.gh': { email: 'jhs1@morningglory.edu.gh' },
+  'jhs2@morningglory.edu.gh': { email: 'daniel.atsidefe@mogasco.edu.gh' },
+  'jhs3@morningglory.edu.gh': { email: 'anthony.kokonu@mogasco.edu.gh' },
+  'margarita.boateng@mogasco.edu.gh': { email: 'primary2@morningglory.edu.gh' },
+  'rita.kwakye@mogasco.edu.gh': { email: 'kg1@morningglory.edu.gh' },
+  'jemima.quaye@mogasco.edu.gh': { email: 'kg2@morningglory.edu.gh' },
+  'eunice.quaye@mogasco.edu.gh': { email: 'primary3@morningglory.edu.gh' },
+  'samaria.mustapha@mogasco.edu.gh': { email: 'primary1@morningglory.edu.gh' },
+}
 
 function splitFullName(fullName: string): { first_name: string; surname: string } {
   const trimmed = (fullName ?? '').trim()
@@ -54,50 +77,45 @@ function splitFullName(fullName: string): { first_name: string; surname: string 
 
 export async function getUserRoleAndProfile(userId: string, userEmail?: string | null): Promise<UserRoleResult> {
   const supabase = createServerClient()
+  const cleanEmail = (userEmail ?? '').trim().toLowerCase()
 
-  let { data: staffRow, error: staffErr } = await supabase
+  // 1. Direct match by user_id
+  let { data: staffRow } = await supabase
     .from('staff')
     .select('id, school_id, staff_id_code, first_name, surname, other_names, gender, staff_type, email, photo_url, is_active')
     .eq('user_id', userId)
     .maybeSingle()
 
-  if (staffErr) throw new Error('staff lookup failed: ' + staffErr.message)
-
-  // ===== FALLBACK #1: match by email (even if user_id is not set on staff row)
-  if (!staffRow && userEmail) {
-    const fallbackStaff = await supabase
+  // 2. Exact match by email
+  if (!staffRow && cleanEmail) {
+    const { data: byEmail } = await supabase
       .from('staff')
       .select('id, school_id, staff_id_code, first_name, surname, other_names, gender, staff_type, email, photo_url, is_active')
-      .ilike('email', userEmail)
+      .ilike('email', cleanEmail)
       .maybeSingle()
-    if (fallbackStaff.error) throw new Error('staff email fallback failed: ' + fallbackStaff.error.message)
-    staffRow = fallbackStaff.data
+    if (byEmail) staffRow = byEmail
   }
 
-  // ===== FALLBACK #2: match by first_name/surname fuzzy against user email prefix + user_profiles
-  if (!staffRow && userEmail) {
-    const prefix = userEmail.split('@')[0].replace(/[._-]/g, ' ').toLowerCase()
-    const fallbackStaff = await supabase
-      .from('staff')
-      .select('id, school_id, staff_id_code, first_name, surname, other_names, gender, staff_type, email, photo_url, is_active')
-      .limit(50)
-    if (!fallbackStaff.error && fallbackStaff.data) {
-      staffRow = fallbackStaff.data.find((s: any) => {
-        const full = ((s.first_name ?? '') + ' ' + (s.surname ?? '')).toLowerCase()
-        const fullRev = ((s.surname ?? '') + ' ' + (s.first_name ?? '')).toLowerCase()
-        return full && (prefix.includes(full.split(' ')[0] ?? '') || full.includes(prefix.split(' ')[0] ?? '') || fullRev.includes(prefix.split(' ')[0] ?? ''))
-      }) as any
+  // 3. Known class email alias match
+  if (!staffRow && cleanEmail && CLASS_EMAIL_MAP[cleanEmail]) {
+    const targetEmail = CLASS_EMAIL_MAP[cleanEmail].email
+    if (targetEmail) {
+      const { data: byAlias } = await supabase
+        .from('staff')
+        .select('id, school_id, staff_id_code, first_name, surname, other_names, gender, staff_type, email, photo_url, is_active')
+        .ilike('email', targetEmail)
+        .maybeSingle()
+      if (byAlias) staffRow = byAlias
     }
   }
 
+  // If staff found, resolve role precisely
   if (staffRow) {
     const type = (staffRow.staff_type ?? '').trim()
     let role: UserRole = null
-    if (ADMIN_STAFF_TYPES.includes(type)) {
+    if (ADMIN_STAFF_TYPES.some(t => t.toLowerCase() === type.toLowerCase())) {
       role = 'ADMIN'
-    } else if (TEACHER_STAFF_TYPES.includes(type)) {
-      role = 'TEACHER'
-    } else if (type) {
+    } else {
       role = 'TEACHER'
     }
     return {
@@ -106,13 +124,12 @@ export async function getUserRoleAndProfile(userId: string, userEmail?: string |
     }
   }
 
-  const { data: studentRow, error: studentErr } = await supabase
+  // Check students
+  const { data: studentRow } = await supabase
     .from('students')
     .select('id, school_id, student_id_code, first_name, surname, other_names, class_id')
     .eq('user_id', userId)
     .maybeSingle()
-
-  if (studentErr) throw new Error('student lookup failed: ' + studentErr.message)
 
   if (studentRow) {
     return {
@@ -121,22 +138,20 @@ export async function getUserRoleAndProfile(userId: string, userEmail?: string |
     }
   }
 
-  let { data: guardianRow, error: guardianErr } = await supabase
+  // Check guardians
+  let { data: guardianRow } = await supabase
     .from('guardians')
     .select('id, full_name, email')
     .eq('user_id', userId)
     .maybeSingle()
 
-  if (guardianErr) throw new Error('guardian lookup failed: ' + guardianErr.message)
-
-  if (!guardianRow && userEmail) {
-    const fallbackGuardian = await supabase
+  if (!guardianRow && cleanEmail) {
+    const { data: fallbackGuardian } = await supabase
       .from('guardians')
       .select('id, full_name, email')
-      .ilike('email', userEmail)
+      .ilike('email', cleanEmail)
       .maybeSingle()
-    if (fallbackGuardian.error) throw new Error('guardian email fallback failed: ' + fallbackGuardian.error.message)
-    guardianRow = fallbackGuardian.data
+    guardianRow = fallbackGuardian
   }
 
   if (guardianRow) {
@@ -146,19 +161,12 @@ export async function getUserRoleAndProfile(userId: string, userEmail?: string |
     }
   }
 
-  // ===== FALLBACK LAYER: user_profiles unified profile resolver
-  // The legacy system used a single `user_profiles` table with `id = auth.users.id`
-  // with role enum [proprietress, headmaster, teacher, accountant].
-  // This bridges users whose row was lost /not
-  const { data: upData, error: upErr } = await supabase
+  // Fallback: user_profiles legacy table
+  const { data: upData } = await supabase
     .from('user_profiles')
     .select('id, full_name, role, class_id, is_active')
     .eq('id', userId)
     .maybeSingle()
-
-  if (upErr) {
-    return { role: null }
-  }
 
   if (upData) {
     const upRole = String((upData as any).role ?? '').toLowerCase()
@@ -177,7 +185,7 @@ export async function getUserRoleAndProfile(userId: string, userEmail?: string |
         : upRole === 'accountant' ? 'Accountant'
         : upRole === 'bursar' ? 'Accountant'
         : 'Teacher',
-      email: userEmail ?? null,
+      email: cleanEmail || null,
       photo_url: null,
       is_active: Boolean((upData as any).is_active ?? true),
     }

@@ -29,22 +29,50 @@ export default async function TeacherScoresheetListPage() {
     )
   }
 
+  // Fetch all assigned subjects for this teacher
   const { data: assignments } = await supabase
     .from("subject_teacher_assignments")
-    .select("id, subject_id, class_id, subjects(id, name, code, class_id, classes(name))")
+    .select("id, subject_id, class_id, subjects(id, name, code, class_id, classes(id, name, sort_order))")
     .eq("teacher_id", staff.id)
 
-  const normalized = (assignments ?? []).map((a: any) => {
+  let normalized = (assignments ?? []).map((a: any) => {
     const classId = a.class_id || a.subjects?.class_id
     const className = a.subjects?.classes?.name || "Class"
+    const classSort = a.subjects?.classes?.sort_order ?? 99
     return {
-      ...a,
+      id: a.id,
+      subject_id: a.subject_id,
       class_id: classId,
       className,
+      classSort,
       subjectName: a.subjects?.name ?? "Subject",
       subjectCode: a.subjects?.code,
     }
   }).filter((a: any) => a.class_id && a.subject_id)
+
+  // Fallback for Class 3 and below Class Teachers (if no explicit STA exists)
+  const { data: myClass } = await supabase
+    .from("classes")
+    .select("id, name, sort_order")
+    .eq("class_teacher_id", staff.id)
+    .maybeSingle()
+
+  if (myClass && myClass.sort_order <= 7 && normalized.length === 0) {
+    const { data: classSubjs } = await supabase
+      .from("subjects")
+      .select("id, name, code, class_id")
+      .eq("class_id", myClass.id)
+
+    normalized = (classSubjs ?? []).map((sub: any) => ({
+      id: sub.id,
+      subject_id: sub.id,
+      class_id: myClass.id,
+      subjectName: sub.name,
+      subjectCode: sub.code,
+      className: myClass.name,
+      classSort: myClass.sort_order,
+    }))
+  }
 
   const { data: submissions } = await supabase
     .from("scoresheet_submissions")
@@ -74,7 +102,7 @@ export default async function TeacherScoresheetListPage() {
     <div className="max-w-5xl mx-auto space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Scoresheets</h1>
+          <h1 className="text-2xl font-bold">My Assigned Scoresheets</h1>
           <p className="text-sm text-text-muted mt-1">
             {rows.length} assigned subject{rows.length !== 1 ? "s" : ""} for the current term.
           </p>
@@ -84,7 +112,7 @@ export default async function TeacherScoresheetListPage() {
       {rows.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-lg border border-border text-text-muted">
           <p className="font-medium">No assigned scoresheets</p>
-          <p className="text-sm mt-1">Subjects will appear here once you&apos;re assigned as a teacher.</p>
+          <p className="text-sm mt-1">You will see your scoresheets here once subjects are assigned to you.</p>
         </div>
       ) : (
         <>
@@ -150,9 +178,9 @@ export default async function TeacherScoresheetListPage() {
                     <td className="py-3 px-4 text-right">
                       <Link
                         href={`/teacher/scoresheets/${r.subjectId}/${r.classId}`}
-                        className="text-sm text-primary hover:underline"
+                        className="text-sm text-primary hover:underline font-medium"
                       >
-                        Open →
+                        Open Sheet →
                       </Link>
                     </td>
                   </tr>

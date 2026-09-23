@@ -49,16 +49,16 @@ export default async function ReportReadinessPage({
 
   const statusColor = (status: "ok" | "warning" | "blocking") =>
     status === "ok"
-      ? "text-success"
+      ? "text-emerald-600"
       : status === "warning"
-      ? "text-warning"
-      : "text-danger"
+      ? "text-amber-600"
+      : "text-red-600"
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Academic Report Readiness</h1>
-        <p className="text-slate-600 text-xs mt-1">Select Academic Year, Term, and Class to review submission prerequisites before printing terminal report cards.</p>
+        <p className="text-slate-600 text-xs mt-1">Select Academic Year, Term, and Class to review submission status and generate/print terminal report cards.</p>
       </div>
 
       {/* Academic Year / Term / Class Selectors */}
@@ -121,7 +121,11 @@ export default async function ReportReadinessPage({
               <div
                 key={check.key}
                 className={`bg-white rounded-xl border p-4 flex items-start gap-3 shadow-sm ${
-                  check.status === "blocking" ? "border-red-300 bg-red-50/30" : check.status === "warning" ? "border-amber-300 bg-amber-50/30" : "border-slate-200"
+                  check.status === "blocking"
+                    ? "border-red-300 bg-red-50/30"
+                    : check.status === "warning"
+                    ? "border-amber-300 bg-amber-50/30"
+                    : "border-slate-200"
                 }`}
               >
                 <span className={`text-lg font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
@@ -134,17 +138,16 @@ export default async function ReportReadinessPage({
           </div>
 
           <div className="pt-2 flex gap-3 justify-end items-center flex-wrap">
-            {!readiness.ready && (
-              <p className="text-xs font-bold text-red-600 self-center">Resolve all blocking issues before generating report cards.</p>
-            )}
-            <Link href={selectedClassId && selectedTermId
-              ? `/admin/remarks?class_id=${selectedClassId}&term_id=${selectedTermId}` : "/admin/remarks"}>
-              <Button variant="secondary">Review Remarks</Button>
-            </Link>
-            <Link href={selectedClassId && selectedTermId && readiness.ready
-              ? `/admin/academic/reports/print?class_id=${selectedClassId}&term_id=${selectedTermId}` : "#"}>
-              <Button disabled={!readiness.ready} className="bg-slate-900 hover:bg-slate-800 text-white font-bold">
-                {readiness.ready ? "🖨️ Mass Print Report Cards" : "Generate Reports — Blocked"}
+            <Link
+              href={selectedClassId && selectedTermId
+                ? `/admin/academic/reports/print?class_id=${selectedClassId}&term_id=${selectedTermId}`
+                : "#"}
+            >
+              <Button
+                disabled={!selectedClassId || !selectedTermId}
+                className="bg-slate-900 hover:bg-slate-800 text-white font-bold"
+              >
+                🖨️ Mass Print Report Cards →
               </Button>
             </Link>
           </div>

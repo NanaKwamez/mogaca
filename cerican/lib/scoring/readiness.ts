@@ -1,6 +1,5 @@
 // lib/scoring/readiness.ts
 // Report readiness checker: surfaces structured list of blockers before PDF generation.
-// PDF generation ≠ academic finalization.
 
 import { createServerClient } from "@/lib/supabase/server"
 import { getBulkAttendanceSummaries } from "@/lib/attendance/service"
@@ -72,78 +71,96 @@ export async function checkReportReadiness(
     }
   }
 
-  // 2. Subject assignments exist for this class
-  const { data: assignments } = await supabase
-    .from("subject_teacher_assignments")
-    .select("subject_id, subjects(name)")
+  // 2. Subjects configured for this class (Dynamic subject count from subjects table)
+  const { data: classSubjects } = await supabase
+    .from("subjects")
+    .select("id, name")
     .eq("class_id", classId)
 
-  const totalAssignedSubjects = assignments?.length ?? 0
+  const totalClassSubjects = classSubjects?.length ?? 0
 
   checks.push({
     key: "subjects",
-    label: "Subject assignments complete",
-    status: totalAssignedSubjects > 0 ? "ok" : "blocking",
-    detail: totalAssignedSubjects === 0 ? "No subjects assigned to teachers for this class." : `${totalAssignedSubjects} subject(s) assigned.`,
+    label: "Subjects configured for class",
+    status: totalClassSubjects > 0 ? "ok" : "blocking",
+    detail: totalClassSubjects === 0
+      ? "No subjects registered for this class."
+      : `${totalClassSubjects} subject(s) configured.`,
   })
 
-  // 3. All scoresheets submitted
-  const { data: submissions } = await supabase
-    .from("scoresheet_submissions")
-    .select("subject_id, status")
-    .eq("class_id", classId)
-    .eq("term_id", termId)
+  // 3. Scoresheets submitted status
+  const subjectIds = (classSubjects ?? []).map(s => s.id)
+  let submittedCount = 0
 
-  const submittedCount = (submissions ?? []).filter(
-    (s: { status: string }) => ["SUBMITTED", "LOCKED"].includes(s.status)
-  ).length
+  if (subjectIds.length > 0) {
+    const { data: submissions } = await supabase
+      .from("scoresheet_submissions")
+      .select("subject_id, status")
+      .eq("class_id", classId)
+      .eq("term_id", termId)
+      .in("subject_id", subjectIds)
 
-  let scoresheetStatus: "ok" | "warning" | "blocking" = "blocking"
+    const submittedSet = new Set(
+      (submissions ?? [])
+        .filter((s: { status: string }) => ["SUBMITTED", "LOCKED"].includes(s.status))
+        .map((s: { subject_id: string }) => s.subject_id)
+    )
+    submittedCount = submittedSet.size
+  }
+
+  let scoresheetStatus: "ok" | "warning" | "blocking" = "warning"
   let scoresheetDetail = ""
 
-  if (totalAssignedSubjects === 0) {
+  if (totalClassSubjects === 0) {
     scoresheetStatus = "blocking"
-    scoresheetDetail = "No subject assignments configured."
+    scoresheetDetail = "No subjects registered for this class."
   } else if (submittedCount === 0) {
-    scoresheetStatus = "blocking"
-    scoresheetDetail = `0 of ${totalAssignedSubjects} scoresheets submitted by subject teachers.`
-  } else if (submittedCount < totalAssignedSubjects) {
-    scoresheetStatus = "blocking"
-    scoresheetDetail = `Only ${submittedCount} of ${totalAssignedSubjects} scoresheets submitted.`
+    scoresheetStatus = "warning"
+    scoresheetDetail = `0 of ${totalClassSubjects} scoresheets submitted by teachers.`
+  } else if (submittedCount < totalClassSubjects) {
+    scoresheetStatus = "warning"
+    scoresheetDetail = `${submittedCount} of ${totalClassSubjects} scoresheets submitted (${totalClassSubjects - submittedCount} pending/draft).`
   } else {
     scoresheetStatus = "ok"
-    scoresheetDetail = `All ${totalAssignedSubjects} scoresheets submitted.`
+    scoresheetDetail = `All ${totalClassSubjects} scoresheets submitted.`
   }
 
   checks.push({
     key: "scoresheets",
-    label: "All scoresheets submitted",
+    label: "Scoresheet submissions",
     status: scoresheetStatus,
     detail: scoresheetDetail,
   })
 
-  // 4. Grades computed (no NULL grades when total score exists)
-  const { count: scoresCount } = await supabase
-    .from("scores")
-    .select("*", { count: "exact", head: true })
-    .eq("term_id", termId)
-
-  const { count: ungradedCount } = await supabase
-    .from("scores")
-    .select("*", { count: "exact", head: true })
-    .eq("term_id", termId)
-    .not("total_score", "is", null)
-    .is("grade", null)
-
+  // 4. Grades computed for students in THIS CLASS
   let gradeStatus: "ok" | "warning" | "blocking" = "ok"
-  let gradeDetail: string | undefined = undefined
+  let gradeDetail = ""
 
-  if ((scoresCount ?? 0) === 0) {
-    gradeStatus = "blocking"
-    gradeDetail = "No scores entered yet."
-  } else if ((ungradedCount ?? 0) > 0) {
-    gradeStatus = "blocking"
-    gradeDetail = `${ungradedCount} entered score(s) missing letter grades.`
+  if (studentIds.length > 0) {
+    const { count: scoresCount } = await supabase
+      .from("scores")
+      .select("*", { count: "exact", head: true })
+      .eq("term_id", termId)
+      .in("student_id", studentIds)
+
+    const { count: ungradedCount } = await supabase
+      .from("scores")
+      .select("*", { count: "exact", head: true })
+      .eq("term_id", termId)
+      .in("student_id", studentIds)
+      .not("total_score", "is", null)
+      .is("grade", null)
+
+    if ((scoresCount ?? 0) === 0) {
+      gradeStatus = "warning"
+      gradeDetail = "No student scores entered yet for this class."
+    } else if ((ungradedCount ?? 0) > 0) {
+      gradeStatus = "warning"
+      gradeDetail = `${ungradedCount} score entry missing calculated letter grade.`
+    } else {
+      gradeStatus = "ok"
+      gradeDetail = `${scoresCount} score entries calculated.`
+    }
   }
 
   checks.push({
@@ -162,12 +179,12 @@ export async function checkReportReadiness(
 
   checks.push({
     key: "attendance",
-    label: "Attendance sufficiently complete",
+    label: "Attendance recorded",
     status: (attendanceCount ?? 0) > 0 ? "ok" : "warning",
-    detail: attendanceCount === 0 ? "No attendance records found — attendance will default." : `${attendanceCount} attendance logs.`,
+    detail: (attendanceCount ?? 0) === 0 ? "No attendance logs recorded this term." : `${attendanceCount} attendance logs.`,
   })
 
-  // 6. Remarks generated & approved
+  // 6. Remarks status
   const { data: remarks } = await supabase
     .from("remark_generation_log")
     .select("status")
@@ -177,27 +194,21 @@ export async function checkReportReadiness(
   const remarksCount = remarks?.length ?? 0
   const approvedCount = (remarks ?? []).filter((r: { status: string }) => r.status === "APPROVED").length
 
-  let remarkStatus: "ok" | "warning" | "blocking" = "warning"
-  let remarkDetail = ""
+  let remarkStatus: "ok" | "warning" | "blocking" = "ok"
+  let remarkDetail = "Dynamic remarks engine active (generates on print preview)."
 
-  if (remarksCount === 0) {
-    remarkStatus = "warning"
-    remarkDetail = "No remarks generated yet."
-  } else if (approvedCount < remarksCount) {
-    remarkStatus = "warning"
+  if (remarksCount > 0) {
     remarkDetail = `${approvedCount} of ${remarksCount} remarks approved.`
-  } else {
-    remarkStatus = "ok"
-    remarkDetail = `All ${remarksCount} remarks approved.`
   }
 
   checks.push({
     key: "remarks",
-    label: "All remarks approved",
+    label: "Report remarks",
     status: remarkStatus,
     detail: remarkDetail,
   })
 
+  // Ready if no hard blocking checks exist (students > 0 && subjects > 0)
   const ready = checks.every((c) => c.status !== "blocking")
 
   return { ready, checks, attendance_completeness: attendanceCompleteness }

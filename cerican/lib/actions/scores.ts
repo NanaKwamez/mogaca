@@ -1,30 +1,31 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { computeGrade } from "@/lib/scoring/grades"
+import { computeGrade, GES_STANDARD_BANDS } from "@/lib/scoring/grades"
 import { recomputeSubjectPositions } from "@/lib/scoring/positions"
+import { calculateFinalGrade, RAW_MAX_SCORES, validateWeights, AssessmentWeights, DEFAULT_WEIGHTS } from "@/lib/scoring/weighted"
 import { z } from "zod"
 
-// Score save schema — null is intentional for incomplete scores
+// Score save schema — raw scores entered by teachers
 const scoreSaveSchema = z.object({
   student_id: z.string().uuid(),
   subject_id: z.string().uuid(),
   term_id: z.string().uuid(),
-  classwork_score: z.number().min(0).nullable().optional(),
-  homework_score: z.number().min(0).nullable().optional(),
-  classtest_score: z.number().min(0).nullable().optional(),
-  exam_score: z.number().min(0).nullable(),
+  classwork_score: z.number().min(0).max(RAW_MAX_SCORES.classwork).nullable().optional(),
+  homework_score: z.number().min(0).max(RAW_MAX_SCORES.homework).nullable().optional(),
+  classtest_score: z.number().min(0).max(RAW_MAX_SCORES.classtest).nullable().optional(),
+  exam_score: z.number().min(0).max(RAW_MAX_SCORES.exam).nullable().optional(),
   class_score: z.number().min(0).nullable().optional(),
 })
 
 export type ScoreSaveResult =
-  | { success: true; total_score: number | null; grade: string | null }
+  | { success: true; total_score: number | null; grade: string | null; class_score: number | null; exam_score: number | null }
   | { success: false; error: string }
 
 export async function saveScore(formData: unknown): Promise<ScoreSaveResult> {
   const parsed = scoreSaveSchema.safeParse(formData)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
-  const { student_id, subject_id, term_id, classwork_score, homework_score, classtest_score, exam_score, class_score } = parsed.data
+  const { student_id, subject_id, term_id, classwork_score, homework_score, classtest_score, exam_score } = parsed.data
 
   const supabase = createServerClient()
   const { data: { session } } = await supabase.auth.getSession()
@@ -38,73 +39,68 @@ export async function saveScore(formData: unknown): Promise<ScoreSaveResult> {
     .eq("term_id", term_id)
     .maybeSingle()
 
-  if (submission?.status === "SUBMITTED" || submission?.status === "LOCKED") {
-    return { success: false, error: "Scoresheet is locked and cannot be edited." }
+  if (submission?.status === "LOCKED") {
+    return { success: false, error: "Scoresheet is locked by administration and cannot be edited." }
   }
 
-  // Fetch score limits from config
+  // Fetch weights configuration from scoresheet_config (or default)
   const { data: config } = await supabase
     .from("scoresheet_config")
-    .select("class_score_max, exam_score_max, columns")
+    .select("columns, hw_weight, cw_weight, ct_weight, exam_weight")
     .eq("term_id", term_id)
     .maybeSingle()
 
   const configCols = (config?.columns as any) || {}
-  const cwMax = configCols.classwork_max ?? 10
-  const hwMax = configCols.homework_max ?? 10
-  const ctMax = configCols.classtest_max ?? 30
-  const examMax = configCols.exam_max ?? config?.exam_score_max ?? 50
-
-  const cw = classwork_score ?? null
-  const hw = homework_score ?? null
-  const ct = classtest_score ?? null
-
-  if (cw !== null && cw > cwMax) return { success: false, error: `Classwork score cannot exceed ${cwMax}.` }
-  if (hw !== null && hw > hwMax) return { success: false, error: `Homework score cannot exceed ${hwMax}.` }
-  if (ct !== null && ct > ctMax) return { success: false, error: `Class Test score cannot exceed ${ctMax}.` }
-  if (exam_score !== null && exam_score > examMax) return { success: false, error: `Exam score cannot exceed ${examMax}.` }
-
-  // Compute total class score from subcomponents (or use provided class_score if subcomponents null)
-  let computedClassScore: number | null = null
-  if (cw !== null || hw !== null || ct !== null) {
-    computedClassScore = (cw ?? 0) + (hw ?? 0) + (ct ?? 0)
-  } else if (class_score !== undefined && class_score !== null) {
-    computedClassScore = class_score
+  const weights: AssessmentWeights = {
+    hwWeight: Number(config?.hw_weight ?? configCols.hw_weight ?? configCols.homework_max ?? DEFAULT_WEIGHTS.hwWeight),
+    cwWeight: Number(config?.cw_weight ?? configCols.cw_weight ?? configCols.classwork_max ?? DEFAULT_WEIGHTS.cwWeight),
+    ctWeight: Number(config?.ct_weight ?? configCols.ct_weight ?? configCols.classtest_max ?? DEFAULT_WEIGHTS.ctWeight),
+    examWeight: Number(config?.exam_weight ?? configCols.exam_weight ?? configCols.exam_max ?? DEFAULT_WEIGHTS.examWeight),
   }
 
-  let total_score: number | null = null
+  // Calculate normalized weighted scores
+  const calc = calculateFinalGrade(
+    {
+      homework_score: homework_score ?? null,
+      classwork_score: classwork_score ?? null,
+      classtest_score: classtest_score ?? null,
+      exam_score: exam_score ?? null,
+    },
+    weights
+  )
+
   let grade: string | null = null
 
-  if (computedClassScore !== null && exam_score !== null) {
-    total_score = computedClassScore + exam_score
-
-    if (total_score > 100) {
-      return { success: false, error: "Total score cannot exceed 100." }
-    }
-
-    // Fetch active grading schema
+  if (calc.totalScore !== null) {
+    // Fetch active grading schema or fall back to standard GES
     const { data: ctx } = await supabase.from("school_current_context").select("school_id").limit(1).single()
-    if (ctx) {
-      const { data: schema } = await supabase
-        .from("grading_schemas")
-        .select("bands")
-        .eq("school_id", ctx.school_id)
-        .eq("is_active", true)
-        .single()
+    const schoolId = ctx?.school_id ?? "6caa6780-29ba-4e94-93b4-5a450fc7ccbc"
+    
+    const { data: schema } = await supabase
+      .from("grading_schemas")
+      .select("bands")
+      .eq("school_id", schoolId)
+      .eq("is_active", true)
+      .maybeSingle()
 
-      if (schema?.bands) {
-        const result = computeGrade(total_score, schema.bands)
-        if (result.success) grade = result.grade
-        else return { success: false, error: result.error }
-      }
+    const bands = schema?.bands || GES_STANDARD_BANDS
+    const result = computeGrade(calc.totalScore, bands)
+    if (result.success) {
+      grade = result.grade
     }
   }
 
-  // Encode component breakdown in subject_remark as structured JSON string for 100% reliability
+  // Encode component raw & weighted breakdown in subject_remark JSON
   const scoreMetaData = JSON.stringify({
-    cw,
-    hw,
-    ct
+    cw: calc.raw.classwork,
+    hw: calc.raw.homework,
+    ct: calc.raw.classtest,
+    rawExam: calc.raw.exam,
+    cw_w: calc.weighted.classwork,
+    hw_w: calc.weighted.homework,
+    ct_w: calc.weighted.classtest,
+    exam_w: calc.weighted.exam,
+    weights,
   })
 
   // Upsert score row
@@ -114,9 +110,9 @@ export async function saveScore(formData: unknown): Promise<ScoreSaveResult> {
       student_id,
       subject_id,
       term_id,
-      class_score: computedClassScore,
-      exam_score: exam_score,
-      total_score,
+      class_score: calc.classScore,
+      exam_score: calc.examScore,
+      total_score: calc.totalScore,
       grade,
       subject_remark: scoreMetaData,
       entered_by: session.user.id,
@@ -126,7 +122,13 @@ export async function saveScore(formData: unknown): Promise<ScoreSaveResult> {
 
   if (upsertErr) return { success: false, error: "Failed to save score: " + upsertErr.message }
 
-  return { success: true, total_score, grade }
+  return {
+    success: true,
+    total_score: calc.totalScore,
+    grade,
+    class_score: calc.classScore,
+    exam_score: calc.examScore,
+  }
 }
 
 // Submit scoresheet → transition status and recompute positions transactionally
@@ -148,7 +150,7 @@ export async function submitScoresheet(
   const { data: staffRow } = await supabase
     .from("staff")
     .select("id")
-    .eq("user_id", session.user.id)
+    .or(`user_id.eq.${session.user.id},email.ilike.${session.user.email ?? ""}`)
     .maybeSingle()
 
   if (staffRow) {
@@ -190,26 +192,35 @@ export async function submitScoresheet(
 
 export async function updateScoresheetConfigWeights(params: {
   termId: string
-  classwork_max: number
-  homework_max: number
-  classtest_max: number
-  exam_max: number
+  hwWeight: number
+  cwWeight: number
+  ctWeight: number
+  examWeight: number
 }) {
   const supabase = createServerClient()
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) return { success: false, error: "Unauthenticated" }
 
-  const { termId, classwork_max, homework_max, classtest_max, exam_max } = params
+  const { termId, hwWeight, cwWeight, ctWeight, examWeight } = params
 
-  const totalSum = classwork_max + homework_max + classtest_max + exam_max
-  if (totalSum !== 100) {
-    return { success: false, error: `Total weights sum to ${totalSum}, but must equal exactly 100.` }
+  const validation = validateWeights({ hwWeight, cwWeight, ctWeight, examWeight })
+  if (!validation.valid) {
+    return { success: false, error: validation.error }
   }
 
   const { data: ctx } = await supabase.from("school_current_context").select("school_id").limit(1).single()
   const schoolId = ctx?.school_id ?? "6caa6780-29ba-4e94-93b4-5a450fc7ccbc"
 
-  const columnsObj = { classwork_max, homework_max, classtest_max, exam_max }
+  const columnsObj = {
+    hw_weight: hwWeight,
+    cw_weight: cwWeight,
+    ct_weight: ctWeight,
+    exam_weight: examWeight,
+    homework_max: RAW_MAX_SCORES.homework,
+    classwork_max: RAW_MAX_SCORES.classwork,
+    classtest_max: RAW_MAX_SCORES.classtest,
+    exam_max: RAW_MAX_SCORES.exam,
+  }
 
   const { error } = await supabase
     .from("scoresheet_config")
@@ -218,8 +229,12 @@ export async function updateScoresheetConfigWeights(params: {
       term_id: termId,
       column_count: 4,
       columns: columnsObj,
-      class_score_max: classwork_max + homework_max + classtest_max,
-      exam_score_max: exam_max,
+      class_score_max: hwWeight + cwWeight + ctWeight,
+      exam_score_max: examWeight,
+      hw_weight: hwWeight,
+      cw_weight: cwWeight,
+      ct_weight: ctWeight,
+      exam_weight: examWeight,
       updated_at: new Date().toISOString(),
     }, { onConflict: "term_id" })
 

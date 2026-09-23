@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createServerClient } from "@/lib/supabase/server"
 import { getUserRoleAndProfile } from "@/lib/auth/role"
 import { ScoreEntryList } from "@/components/teacher/ScoreEntryList"
+import { DEFAULT_WEIGHTS } from "@/lib/scoring/weighted"
 
 export default async function TeacherScoreEntryPage({
   params,
@@ -68,15 +69,15 @@ export default async function TeacherScoreEntryPage({
 
   const { data: config } = await supabase
     .from("scoresheet_config")
-    .select("class_score_max, exam_score_max, columns")
+    .select("columns, hw_weight, cw_weight, ct_weight, exam_weight")
     .eq("term_id", ctx.term_id)
     .maybeSingle()
 
   const configCols = (config?.columns as any) || {}
-  const classworkMax = configCols.classwork_max ?? 10
-  const homeworkMax = configCols.homework_max ?? 10
-  const classtestMax = configCols.classtest_max ?? 30
-  const examMax = configCols.exam_max ?? config?.exam_score_max ?? 50
+  const hwWeight = Number(config?.hw_weight ?? configCols.hw_weight ?? configCols.homework_max ?? DEFAULT_WEIGHTS.hwWeight)
+  const cwWeight = Number(config?.cw_weight ?? configCols.cw_weight ?? configCols.classwork_max ?? DEFAULT_WEIGHTS.cwWeight)
+  const ctWeight = Number(config?.ct_weight ?? configCols.ct_weight ?? configCols.classtest_max ?? DEFAULT_WEIGHTS.ctWeight)
+  const examWeight = Number(config?.exam_weight ?? configCols.exam_weight ?? configCols.exam_max ?? DEFAULT_WEIGHTS.examWeight)
 
   const { data: studentRows } = await supabase
     .from("students")
@@ -99,12 +100,16 @@ export default async function TeacherScoreEntryPage({
     let cw: number | null = null
     let hw: number | null = null
     let ct: number | null = null
+    let rawEx: number | null = sc.exam_score ?? null
     if (sc.subject_remark) {
       try {
         const meta = JSON.parse(sc.subject_remark)
         cw = meta.cw ?? null
         hw = meta.hw ?? null
         ct = meta.ct ?? null
+        if (meta.rawExam !== undefined && meta.rawExam !== null) {
+          rawEx = meta.rawExam
+        }
       } catch (e) {
         // legacy format fallback
       }
@@ -114,6 +119,7 @@ export default async function TeacherScoreEntryPage({
       classwork_score: cw,
       homework_score: hw,
       classtest_score: ct,
+      raw_exam_score: rawEx,
     })
   }
 
@@ -141,7 +147,7 @@ export default async function TeacherScoreEntryPage({
             classwork_score: sc.classwork_score,
             homework_score: sc.homework_score,
             classtest_score: sc.classtest_score,
-            exam_score: sc.exam_score,
+            exam_score: sc.raw_exam_score ?? sc.exam_score,
             total_score: sc.total_score,
             grade: sc.grade,
             position: sc.position,
@@ -155,7 +161,7 @@ export default async function TeacherScoreEntryPage({
       <header>
         <h1 className="text-2xl font-bold">Enter Scores</h1>
         <p className="text-sm text-text-muted mt-1">
-          Edits are saved on blur. Submit the scoresheet once all entries are complete to lock and calculate positions.
+          Raw scores are normalized and weighted automatically. Edits are saved on blur.
         </p>
       </header>
 
@@ -164,10 +170,10 @@ export default async function TeacherScoreEntryPage({
         subjectId={params.subjectId}
         classId={params.classId}
         termId={ctx.term_id}
-        classworkMax={classworkMax}
-        homeworkMax={homeworkMax}
-        classtestMax={classtestMax}
-        examMax={examMax}
+        hwWeight={hwWeight}
+        cwWeight={cwWeight}
+        ctWeight={ctWeight}
+        examWeight={examWeight}
         submissionStatus={submission?.status ?? "DRAFT"}
         subjectName={subjectRow?.name ?? "—"}
         className={classRow?.name ?? "—"}
